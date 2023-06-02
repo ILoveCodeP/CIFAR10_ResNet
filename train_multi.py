@@ -246,9 +246,9 @@ def resnet_v1(input_shape,num_res):
 
 
 # train_list=['mix',6,0,2,1.9,1.5,1.3,1,0.9,0.5]
-train_list=['mix','mixwithout0.5',5.5]
-alpha_trains = [2,1.9,1.5,1.3,1,0.9,0.5]
-alpha_trains2 = [2,1.9,1.5,1.3,1,0.9]
+train_list=['mix','mixwithout0.5',5.5,2,1.9,1.5,1.3,1,0.9,0.5] #所有的可以全部一起训练
+alpha_trains = [2,1.9,1.5,1.3,1,0.9,0.5] 
+alpha_trains2 = [2,1.9,1.5,1.3,1,0.9] #0.5的影响太大，加一个没有0.5的看看
 num = len(alpha_trains)
 times_tmp = 2 #multiple时 每种噪声加几倍
 model_type = 'resnet'
