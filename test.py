@@ -45,11 +45,15 @@ from tensorflow.keras.models import load_model
 import argparse
 parser = argparse.ArgumentParser()
 parser.add_argument('--num_filters', type=int)
-num_filter_block = parser.parse_args()
+parser.add_argument('--num_res', type=int)
+args = parser.parse_args()
+num_filter_block=args.num_filters
+num_res = args.num_res
 
 os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 os.environ['CUDA_VISIBLE_DEVICES'] = "0,1"
+os.environ['HDF5_USE_FILE_LOCKING'] = 'FALSE'
 config = tf.compat.v1.ConfigProto()
 config.allow_soft_placement=True
 config.gpu_options.per_process_gpu_memory_fraction=0.7
@@ -59,8 +63,8 @@ session = tf.compat.v1.Session(config=config)
 
 # In[2]:
 
-
-noise_scale = np.sqrt(0.5)*0.05* 255
+sigma = 0.05
+noise_scale = np.sqrt(0.5)*sigma* 255
 
 def stable_noise(img, alpha, beta, scale):
     '''
@@ -89,6 +93,7 @@ def stable_noise_row(row, alpha, beta=0, scale=noise_scale):  # scale修改为0.
     #         random_state = row.name #第0张图的随机数种子就是0，第1张图的随机数种子就是1，以此类推。。。
     return stable_noise(np.asarray(row).reshape(32, 32, 3), alpha, beta, scale)[0].reshape(3072)
 
+
 def stable_noise_mixture(img, alphas, beta, scale):
     '''
     此函数用将产生的stable噪声加到图片上。mixture：对每个像素随机加不同alpha的噪声。
@@ -116,7 +121,7 @@ def stable_noise_mixture(img, alphas, beta, scale):
     stable_out = np.uint(stable_out)
     return stable_out, noise # 这里也会返回噪声，注意返回值
 
-def stable_noise_mixture_row(row, alphas, beta=0, scale=30):  #scale定为30
+def stable_noise_mixture_row(row, alphas, beta=0, scale=noise_scale):  #scale定为30
     '''
     对数据集中的行添加噪声
     row : pd.dataframe中的一行
@@ -124,6 +129,41 @@ def stable_noise_mixture_row(row, alphas, beta=0, scale=30):  #scale定为30
     '''
     return stable_noise_mixture(np.asarray(row).reshape(32, 32, 3), alphas, beta, scale)[0].reshape(3072)
     # [0]是因为stable_noise这个函数会返回两个值，我们只需要第一个值
+
+def stable_noise_hundred(inputs, alpha, beta=0, scale=noise_scale): 
+    '''
+    对数据集中的行添加噪声
+    每一百行一起添加噪声
+    alpha, beta, scale : 需要添加噪声的alpha, beta, scale
+    '''
+    noisy_data = np.zeros(inputs.shape)
+    num_samples = np.shape(inputs)[0]
+    k = np.arange(0,num_samples,100)
+    for i in k:
+        temp = inputs[i:i+100]
+        temp_noise = stable_noise(temp, alpha, beta, scale)[0]
+        noisy_data[i:i+100] = temp_noise
+    return noisy_data
+
+def stable_noise_mixture_hundred(inputs, alphas, beta, scale):
+
+    noisy_data = np.zeros(inputs.shape)
+    num_samples = np.shape(inputs)[0]
+    k = np.arange(0,num_samples,100)
+    for i in k:
+        temp = inputs[i:i+100]
+        alpha_c = np.random.choice(alphas, size=temp.shape)
+
+        # 产生stable noise
+        noise = levy_stable.rvs(alpha=alpha_c,beta=beta,scale=scale)
+        # 将噪声和图片叠加
+        stable_out = temp + noise
+        # 将超过 255 的置 255，低于 0 的置 0
+        stable_out = np.clip(stable_out, 0, 255)
+        # 取整
+        stable_out = np.uint(stable_out)
+        noisy_data[i:i+100] = stable_out
+    return noisy_data
 
 
 # In[4]:
@@ -205,8 +245,9 @@ def resnet_v1(input_shape,num_res):
 # In[ ]:
 
 
-train_list=[6,0,2,1.9,1.5,1.3,1,0.9]
-alpha_trains = [2,1.9,1.5,1.3,1,0.9]
+train_list=['mix',6,0,2,1.9,1.5,1.3,1,0.9,0.5,5.5,'mixwithout0.5']
+alpha_trains = [2,1.9,1.5,1.3,1,0.9,0.5]
+alpha_trains2 = [2,1.9,1.5,1.3,1,0.9]
 num = len(alpha_trains)
 times_tmp = 2 #multiple时 每种噪声加几倍
 model_type = 'resnet'
@@ -216,9 +257,9 @@ for alpha_train in train_list:
     auc_temp = []
     mi_temp = []
     alpha_test_temp = []
-    num_res = 6 #原始值是6
+    num_res = num_res #原始值是6
     for repeat_time in  range(5): 
-        model = load_model('resnet_trainalpha{}_repeattimes{}_numfilters{}.h5'.format(alpha_train,repeat_time,num_filter_block))
+        model = load_model('resnet_trainalpha{}_repeattimes{}_numfilters{}_numblocks{}.h5'.format(alpha_train,repeat_time,num_filter_block,num_res))
         noisy_test = np.tile(X_test_f, (times,1))
         (X_train_temp, y_train), (X_test_temp, y_test_f) = cifar10.load_data()
         num_trainSamples = X_train_temp.shape[0]
@@ -258,7 +299,7 @@ for alpha_train in train_list:
                 X_test = X_test.reshape(num_testSamples,32,32,3)
                 for alpha_ in alpha_trains:
                     temp = noisy_te.copy() #50000*times_tmp*3072
-                    noise = np.apply_along_axis(lambda x: stable_noise_row(x, alpha = alpha_, scale=noise_scale), axis=1, arr=temp)
+                    noise = stable_noise_hundred(temp,alpha=alpha_,beta=0,scale = noise_scale)
                     noise = noise.reshape(num_testSamples*times_tmp,32,32,3)
                     X_test = np.r_[X_test,noise]
                     print(np.shape(X_test))
@@ -267,6 +308,7 @@ for alpha_train in train_list:
                 y_test = to_categorical(y_test, num_classes)
                 y_test = np.array(y_test)
                 y_test = y_test.reshape(num_testSamples*(times_tmp*num+1),10)
+
             elif alpha_test == 'mix':
                 y_te = np.tile(y_test,(times+1,1))
                 y_test = encoder.fit_transform(y_te)
@@ -274,8 +316,7 @@ for alpha_train in train_list:
                 y_test = np.array(y_test)
                 y_test = y_test.reshape(10000*(times+1),10)
 
-                X_noise_test = np.apply_along_axis(lambda x: stable_noise_mixture_row(x, alphas=alpha_trains, scale=noise_scale),
-                                              axis=1, arr=noisy_test)
+                X_noise_test = stable_noise_mixture_hundred(noisy_test,alphas = alpha_trains,beta=0,scale = noise_scale)
                 X_noise_test = X_noise_test.reshape(10000*times,32,32,3)
                 X_test = X_test.reshape(10000,32,32,3)
                 X_test = np.r_[X_test,X_noise_test]
@@ -285,9 +326,8 @@ for alpha_train in train_list:
                 y_test = to_categorical(y_test, num_classes)
                 y_test = np.array(y_test)
                 y_test = y_test.reshape(10000*(times+1),10)
-
-                X_noise_test = np.apply_along_axis(lambda x: stable_noise_row(x, alpha=alpha_test, scale=noise_scale),
-                                              axis=1, arr=noisy_test)
+                X_noise_test = stable_noise_hundred(noisy_test,alpha=alpha_,beta=0,scale = noise_scale)
+                # X_noise_test = np.apply_along_axis(lambda x: stable_noise_row(x, alpha=alpha_test, scale=noise_scale),axis=1, arr=noisy_test)
                 X_noise_test = X_noise_test.reshape(10000*times,32,32,3)
                 X_test = X_test.reshape(10000,32,32,3)
                 X_test = np.r_[X_test,X_noise_test]
@@ -315,10 +355,12 @@ for alpha_train in train_list:
 
         del model
         gc.collect()
-    print(acc_temp)
-    np.savetxt('accuracy_alpha{}_model{}_numfilter{}.txt'.format(alpha_train,model_type,num_filter_block), acc_temp)
-    np.savetxt('auc_alpha{}_model{}_numfilter{}.txt'.format(alpha_train,model_type,num_filter_block), auc_temp)
-    np.savetxt('alpha_test__alpha{}_model{}_numfilter{}.txt'.format(alpha_train,model_type,num_filter_block), alpha_test_temp)
+    
+    with open("./results/CIFAR10_resnet_numfilters{}_b{}_alpha{}_sigma{}_num_blocks{}.txt".format(args.num_filter_block,batch_size,alpha_train,sigma,num_res), "wb") as path_acc:
+        pickle.dump(acc_temp, path_acc)
+    # np.savetxt('accuracy_alpha{}_model{}_numfilter{}.txt'.format(alpha_train,model_type,num_filter_block), acc_temp)
+    # np.savetxt('auc_alpha{}_model{}_numfilter{}.txt'.format(alpha_train,model_type,num_filter_block), auc_temp)
+    # np.savetxt('alpha_test__alpha{}_model{}_numfilter{}.txt'.format(alpha_train,model_type,num_filter_block), alpha_test_temp)
 
 
 
